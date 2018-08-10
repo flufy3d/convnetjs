@@ -11,15 +11,23 @@
     this.l1_decay = typeof options.l1_decay !== 'undefined' ? options.l1_decay : 0.0;
     this.l2_decay = typeof options.l2_decay !== 'undefined' ? options.l2_decay : 0.0;
     this.batch_size = typeof options.batch_size !== 'undefined' ? options.batch_size : 1;
-    this.method = typeof options.method !== 'undefined' ? options.method : 'sgd'; // sgd/adagrad/adadelta/windowgrad/netsterov
+    this.method = typeof options.method !== 'undefined' ? options.method : 'sgd'; // sgd/adam/adagrad/adadelta/windowgrad/netsterov
 
     this.momentum = typeof options.momentum !== 'undefined' ? options.momentum : 0.9;
     this.ro = typeof options.ro !== 'undefined' ? options.ro : 0.95; // used in adadelta
-    this.eps = typeof options.eps !== 'undefined' ? options.eps : 1e-6; // used in adadelta
+    this.eps = typeof options.eps !== 'undefined' ? options.eps : 1e-8; // used in adam or adadelta
+    this.beta1 = typeof options.beta1 !== 'undefined' ? options.beta1 : 0.9; // used in adam
+    this.beta2 = typeof options.beta2 !== 'undefined' ? options.beta2 : 0.999; // used in adam
 
     this.k = 0; // iteration counter
     this.gsum = []; // last iteration gradients (used for momentum calculations)
-    this.xsum = []; // used in adadelta
+    this.xsum = []; // used in adam or adadelta
+
+    // check if regression is expected 
+    if(this.net.layers[this.net.layers.length - 1].layer_type === "regression")
+      this.regression = true;
+    else
+      this.regression = false;
   }
 
   Trainer.prototype = {
@@ -36,6 +44,9 @@
       var l1_decay_loss = 0.0;
       var end = new Date().getTime();
       var bwd_time = end - start;
+
+      if(this.regression && y.constructor !== Array)
+        console.log("Warning: a regression net requires an array as training output vector.");
       
       this.k++;
       if(this.k % this.batch_size === 0) {
@@ -47,10 +58,10 @@
           // only vanilla sgd doesnt need either lists
           // momentum needs gsum
           // adagrad needs gsum
-          // adadelta needs gsum and xsum
+          // adam and adadelta needs gsum and xsum
           for(var i=0;i<pglist.length;i++) {
             this.gsum.push(global.zeros(pglist[i].params.length));
-            if(this.method === 'adadelta') {
+            if(this.method === 'adam' || this.method === 'adadelta') {
               this.xsum.push(global.zeros(pglist[i].params.length));
             } else {
               this.xsum.push([]); // conserve memory
@@ -81,7 +92,15 @@
 
             var gsumi = this.gsum[i];
             var xsumi = this.xsum[i];
-            if(this.method === 'adagrad') {
+            if(this.method === 'adam') {
+              // adam update
+              gsumi[j] = gsumi[j] * this.beta1 + (1- this.beta1) * gij; // update biased first moment estimate
+              xsumi[j] = xsumi[j] * this.beta2 + (1-this.beta2) * gij * gij; // update biased second moment estimate
+              var biasCorr1 = gsumi[j] * (1 - Math.pow(this.beta1, this.k)); // correct bias first moment estimate
+              var biasCorr2 = xsumi[j] * (1 - Math.pow(this.beta2, this.k)); // correct bias second moment estimate
+              var dx =  - this.learning_rate * biasCorr1 / (Math.sqrt(biasCorr2) + this.eps);
+              p[j] += dx;
+            } else if(this.method === 'adagrad') {
               // adagrad update
               gsumi[j] = gsumi[j] + gij * gij;
               var dx = - this.learning_rate / Math.sqrt(gsumi[j] + this.eps) * gij;
@@ -94,7 +113,6 @@
               var dx = - this.learning_rate / Math.sqrt(gsumi[j] + this.eps) * gij; // eps added for better conditioning
               p[j] += dx;
             } else if(this.method === 'adadelta') {
-              // assume adadelta if not sgd or adagrad
               gsumi[j] = this.ro * gsumi[j] + (1-this.ro) * gij * gij;
               var dx = - Math.sqrt((xsumi[j] + this.eps)/(gsumi[j] + this.eps)) * gij;
               xsumi[j] = this.ro * xsumi[j] + (1-this.ro) * dx * dx; // yes, xsum lags behind gsum by 1.
